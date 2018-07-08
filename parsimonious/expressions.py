@@ -13,7 +13,7 @@ from six import integer_types, python_2_unicode_compatible
 from six.moves import range
 
 from parsimonious.exceptions import ParseError, IncompleteParseError
-from parsimonious.nodes import Node, RegexNode
+from parsimonious.nodes import Node, RegexNode, ParseContext
 from parsimonious.utils import StrAndRepr
 
 MARKER = object()
@@ -43,7 +43,7 @@ def expression(callable, rule_name, grammar):
 
         def foo(text, pos, cache, error, grammar):
             # Call out to other rules:
-            node = grammar['another_rule'].match_core(text, pos, cache, error)
+            node = grammar['another_rule'].match_core(text, pos, cache, error, ctx)
             ...
             # Return values as above.
 
@@ -60,16 +60,16 @@ def expression(callable, rule_name, grammar):
     num_args = len(getargspec(callable).args)
     if num_args == 2:
         is_simple = True
-    elif num_args == 5:
+    elif num_args == 6:
         is_simple = False
     else:
         raise RuntimeError("Custom rule functions must take either 2 or 5 "
                            "arguments, not %s." % num_args)
 
     class AdHocExpression(Expression):
-        def _uncached_match(self, text, pos, cache, error):
+        def _uncached_match(self, text, pos, cache, error, ctx):
             result = (callable(text, pos) if is_simple else
-                      callable(text, pos, cache, error, grammar))
+                      callable(text, pos, cache, error, ctx, grammar))
 
             if isinstance(result, integer_types):
                 end, children = result, None
@@ -132,12 +132,13 @@ class Expression(StrAndRepr):
 
         """
         error = ParseError(text)
-        node = self.match_core(text, pos, {}, error)
+        ctx = ParseContext()
+        node = self.match_core(text, pos, {}, error, ctx)
         if node is None:
             raise error
         return node
 
-    def match_core(self, text, pos, cache, error):
+    def match_core(self, text, pos, cache, error, ctx):
         """Internal guts of ``match()``
 
         This is appropriate to call only from custom rules or Expression
@@ -175,7 +176,8 @@ class Expression(StrAndRepr):
             node = cache[(expr_id, pos)] = self._uncached_match(text,
                                                                 pos,
                                                                 cache,
-                                                                error)
+                                                                error,
+                                                                ctx)
 
         # Record progress for error reporting:
         if node is None and pos >= error.pos and (
@@ -234,7 +236,7 @@ class Literal(Expression):
         self.literal = literal
         self.identity_tuple = (name, literal)
 
-    def _uncached_match(self, text, pos, cache, error):
+    def _uncached_match(self, text, pos, cache, error, ctx):
         if text.startswith(self.literal, pos):
             return Node(self, text, pos, pos + len(self.literal))
 
@@ -249,7 +251,7 @@ class TokenMatcher(Literal):
     This is for use only with TokenGrammars.
 
     """
-    def _uncached_match(self, token_list, pos, cache, error):
+    def _uncached_match(self, token_list, pos, cache, error, ctx):
         if token_list[pos].type == self.literal:
             return Node(self, token_list, pos, pos + 1)
 
@@ -274,7 +276,7 @@ class Regex(Expression):
                                       (verbose and re.X))
         self.identity_tuple = (self.name, self.re)
 
-    def _uncached_match(self, text, pos, cache, error):
+    def _uncached_match(self, text, pos, cache, error, ctx):
         """Return length of match, ``None`` if no match."""
         m = self.re.match(text, pos)
         if m is not None:
@@ -325,12 +327,12 @@ class Sequence(Compound):
     after another.
 
     """
-    def _uncached_match(self, text, pos, cache, error):
+    def _uncached_match(self, text, pos, cache, error, ctx):
         new_pos = pos
         length_of_sequence = 0
         children = []
         for m in self.members:
-            node = m.match_core(text, new_pos, cache, error)
+            node = m.match_core(text, new_pos, cache, error, ctx)
             if node is None:
                 return None
             children.append(node)
@@ -351,9 +353,9 @@ class OneOf(Compound):
     wins.
 
     """
-    def _uncached_match(self, text, pos, cache, error):
+    def _uncached_match(self, text, pos, cache, error, ctx):
         for m in self.members:
-            node = m.match_core(text, pos, cache, error)
+            node = m.match_core(text, pos, cache, error, ctx)
             if node is not None:
                 # Wrap the succeeding child in a node representing the OneOf:
                 return Node(self, text, pos, node.end, children=[node])
@@ -370,8 +372,8 @@ class Lookahead(Compound):
     # Downside: pretty-printed grammars might be spelled differently than what
     # went in. That doesn't bother me.
 
-    def _uncached_match(self, text, pos, cache, error):
-        node = self.members[0].match_core(text, pos, cache, error)
+    def _uncached_match(self, text, pos, cache, error, ctx):
+        node = self.members[0].match_core(text, pos, cache, error, ctx)
         if node is not None:
             return Node(self, text, pos, pos)
 
@@ -385,10 +387,10 @@ class Not(Compound):
     In any case, it never consumes any characters; it's a negative lookahead.
 
     """
-    def _uncached_match(self, text, pos, cache, error):
+    def _uncached_match(self, text, pos, cache, error, ctx):
         # FWIW, the implementation in Parsing Techniques in Figure 15.29 does
         # not bother to cache NOTs directly.
-        node = self.members[0].match_core(text, pos, cache, error)
+        node = self.members[0].match_core(text, pos, cache, error, ctx)
         if node is None:
             return Node(self, text, pos, pos)
 
@@ -407,8 +409,8 @@ class Optional(Compound):
     consumes. Otherwise, it consumes nothing.
 
     """
-    def _uncached_match(self, text, pos, cache, error):
-        node = self.members[0].match_core(text, pos, cache, error)
+    def _uncached_match(self, text, pos, cache, error, ctx):
+        node = self.members[0].match_core(text, pos, cache, error, ctx)
         return (Node(self, text, pos, pos) if node is None else
                 Node(self, text, pos, node.end, children=[node]))
 
@@ -420,11 +422,11 @@ class Optional(Compound):
 class ZeroOrMore(Compound):
     """An expression wrapper like the * quantifier in regexes."""
 
-    def _uncached_match(self, text, pos, cache, error):
+    def _uncached_match(self, text, pos, cache, error, ctx):
         new_pos = pos
         children = []
         while True:
-            node = self.members[0].match_core(text, new_pos, cache, error)
+            node = self.members[0].match_core(text, new_pos, cache, error, ctx)
             if node is None or not (node.end - node.start):
                 # Node was None or 0 length. 0 would otherwise loop infinitely.
                 return Node(self, text, pos, new_pos, children)
@@ -451,11 +453,11 @@ class OneOrMore(Compound):
         super(OneOrMore, self).__init__(member, name=name)
         self.min = min
 
-    def _uncached_match(self, text, pos, cache, error):
+    def _uncached_match(self, text, pos, cache, error, ctx):
         new_pos = pos
         children = []
         while True:
-            node = self.members[0].match_core(text, new_pos, cache, error)
+            node = self.members[0].match_core(text, new_pos, cache, error, ctx)
             if node is None:
                 break
             children.append(node)

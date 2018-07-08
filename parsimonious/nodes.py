@@ -15,6 +15,18 @@ from six import reraise, python_2_unicode_compatible, with_metaclass, \
 from parsimonious.exceptions import VisitationError, UndefinedLabel
 
 
+class ParseContext(object):
+    """A parse context node
+    Handles state passing between calls
+    """
+    
+    def __init__(self):
+        pass
+
+    def args(self):
+        pass
+
+
 @python_2_unicode_compatible
 class Node(object):
     """A parse tree node

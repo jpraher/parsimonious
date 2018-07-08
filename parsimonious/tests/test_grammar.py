@@ -336,8 +336,8 @@ class GrammarTests(TestCase):
             # generated for `digit`; it falls right through to `real_digit`.
             # I'm not sure if this could lead to problems; I can't think of
             # any, but it's probably not a great idea.
-            digit=lambda text, pos, cache, error, grammar:
-                    grammar['real_digit'].match_core(text, pos, cache, error))
+            digit=lambda text, pos, cache, error, ctx, grammar:
+                    grammar['real_digit'].match_core(text, pos, cache, error, ctx))
         s = '[6]'
         eq_(grammar.parse(s),
             Node(grammar['bracketed_digit'], s, 0, 3, children=[
